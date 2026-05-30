@@ -1,0 +1,9 @@
+#!/bin/bash
+
+rm -rf build/*
+rm -rf lib/*
+rm -rf bin/*
+
+find . -name '.DS_Store'  -print -exec rm -rfv {} \;
+find . -name '*~'  -print -exec rm -rfv {} \;
+find . -name '#*'  -print -exec rm -rfv {} \;

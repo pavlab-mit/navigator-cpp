@@ -1,0 +1,5 @@
+add_executable(navigator_test navigator_test.cpp)
+target_link_libraries(navigator_test PRIVATE navigator_cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(navigator_test PRIVATE gpiod)
+endif()

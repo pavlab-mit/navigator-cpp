@@ -1,0 +1,5 @@
+add_library(nav_bmp3_api OBJECT BMP3_SensorAPI/bmp3.c)
+target_include_directories(nav_bmp3_api PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/BMP3_SensorAPI)
+
+add_library(nav_attitude_estimator OBJECT attitude_estimator/attitude_estimator.cpp)
+target_include_directories(nav_attitude_estimator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/attitude_estimator)

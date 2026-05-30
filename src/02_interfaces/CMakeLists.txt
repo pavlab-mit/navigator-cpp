@@ -1,0 +1,8 @@
+add_subdirectory(gpio)
+add_subdirectory(i2c)
+add_subdirectory(leak)
+add_subdirectory(led)
+add_subdirectory(neopixel)
+add_subdirectory(pca9685)
+add_subdirectory(sbus)
+add_subdirectory(spi)

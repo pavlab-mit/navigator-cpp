@@ -5,61 +5,34 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
-option(BUILD_TESTS "Build hardware test binaries" OFF)
+# Output directories
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 
-# ─── Static library ─────────────────────────────────────────────
+option(BUILD_UNIT_TESTS "Build unit test binaries" OFF)
+option(BUILD_EXAMPLES   "Build example binaries"   OFF)
 
-add_library(navigator_cpp STATIC
-    src/nav.cpp
-    src/i2c.cpp
-    src/spi.cpp
-    src/gpio.cpp
-    src/bmp390.cpp
-    src/bmp280.cpp
-    src/icm20689.cpp
-    src/ak09915.cpp
-    src/mmc5983.cpp
-    src/ads1115.cpp
-    src/pca9685.cpp
-    src/leak.cpp
-    src/led.cpp
-    src/neopixel.cpp
-    vendored/BMP3_SensorAPI/bmp3.c
-)
+# Library (always built)
+add_subdirectory(src)
 
-target_include_directories(navigator_cpp
-    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendored/BMP3_SensorAPI
-)
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(navigator_cpp PRIVATE gpiod)
+# Unit tests (opt-in)
+if(BUILD_UNIT_TESTS)
+    add_subdirectory(src/04_unit_tests)
 endif()
 
-# ─── Tests ───────────────────────────────────────────────────────
-
-if(BUILD_TESTS)
-    set(TEST_SOURCES
-        test_version_detect
-        test_bmp390
-        test_bmp280
-        test_icm20689
-        test_ak09915
-        test_mmc5983
-        test_ads1115
-        test_pca9685
-        test_leak
-        test_leds
-        test_neopixel
-        test_all
-    )
-
-    foreach(test_name ${TEST_SOURCES})
-        add_executable(${test_name} tests/${test_name}.cpp)
-        target_link_libraries(${test_name} PRIVATE navigator_cpp)
-        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            target_link_libraries(${test_name} PRIVATE gpiod)
-        endif()
-    endforeach()
+# Examples (opt-in)
+if(BUILD_EXAMPLES)
+    add_subdirectory(src/05_examples)
 endif()
+
+# Always built
+add_subdirectory(src/06_navigator_test)
+add_subdirectory(src/07_test_rc)
+
+# Install
+install(TARGETS navigator_cpp
+    ARCHIVE DESTINATION lib
+)
+install(FILES include/nav_bindings.h
+    DESTINATION include
+)

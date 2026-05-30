@@ -1,0 +1,6 @@
+add_subdirectory(ads1115)
+add_subdirectory(ak09915)
+add_subdirectory(bmp280)
+add_subdirectory(bmp390)
+add_subdirectory(icm20689)
+add_subdirectory(mmc5983)

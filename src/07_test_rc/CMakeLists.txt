@@ -1,0 +1,6 @@
+add_executable(test_rc test_rc.cpp)
+target_link_libraries(test_rc PRIVATE navigator_cpp)
+target_include_directories(test_rc PRIVATE ${CMAKE_SOURCE_DIR}/src/02_interfaces/sbus)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_rc PRIVATE gpiod)
+endif()
