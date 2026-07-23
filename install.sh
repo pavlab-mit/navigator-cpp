@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 
 # Build release if not already built
-if [ ! -f "$SCRIPT_DIR/lib/libnavigator_cpp.a" ]; then
+if [ ! -f "$SCRIPT_DIR/lib/libnavigator_cpp.so" ]; then
     echo "Building release..."
     "$SCRIPT_DIR/build.sh" -r
 fi
@@ -16,9 +16,12 @@ echo "Installing to /usr/local..."
 cd "$BUILD_DIR"
 sudo cmake --install . --prefix /usr/local
 
+# Refresh the loader cache so /usr/local/lib/libnavigator_cpp.so resolves at runtime
+sudo ldconfig
+
 echo ""
 echo "Installed:"
-echo "  /usr/local/lib/libnavigator_cpp.a"
+echo "  /usr/local/lib/libnavigator_cpp.so"
 echo "  /usr/local/include/nav_bindings.h"
 echo ""
 echo "In your CMakeLists.txt:"

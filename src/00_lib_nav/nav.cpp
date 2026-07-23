@@ -28,8 +28,9 @@ struct Navigator::Impl {
     // File descriptors (-1 = not open)
     int i2c_sensor_fd = -1;
     int i2c_pwm_fd    = -1;
-    int spi_imu_fd    = -1;
-    int spi_mmc_fd    = -1;  // MMC5983 on SPI 1.1, mode 0
+    SpiDevice spi_imu;    // ICM20602: spidev1.2 or spidev1.0 + GPIO 16 CS
+    SpiDevice spi_mmc;    // MMC5983:  spidev1.1 or spidev1.0 + GPIO 17 CS
+    SpiDevice spi_neo;    // NeoPixel: spidev0.0, no manual CS
 
     GpioChip* gpio = nullptr;
 
@@ -85,11 +86,19 @@ std::string Navigator::init(NavVersion nav, PiVersion pi) {
     err = i2c_open(pwm_i2c, m_impl->i2c_pwm_fd);
     if (!err.empty()) warnings += "  [pwm-i2c] " + err + "\n";
 
-    err = spi_open("/dev/spidev1.2", 10000000, 0, m_impl->spi_imu_fd);
-    if (!err.empty()) warnings += "  [spi-imu] " + err + "\n";
+    // SPI for ICM20602: try spidev1.2 (kernel CS), fallback to spidev1.0 + GPIO 16 manual CS
+    err = spi_open("/dev/spidev1.2", 10000000, 0, -1, m_impl->spi_imu);
+    if (!err.empty()) {
+        err = spi_open("/dev/spidev1.0", 10000000, 0, 16, m_impl->spi_imu);
+        if (!err.empty()) warnings += "  [spi-imu] " + err + "\n";
+    }
 
-    err = spi_open("/dev/spidev1.1", 1000000, 0, m_impl->spi_mmc_fd);
-    if (!err.empty()) warnings += "  [spi-mmc] " + err + "\n";
+    // SPI for MMC5983: try spidev1.1 (kernel CS), fallback to spidev1.0 + GPIO 17 manual CS
+    err = spi_open("/dev/spidev1.1", 1000000, 0, -1, m_impl->spi_mmc);
+    if (!err.empty()) {
+        err = spi_open("/dev/spidev1.0", 1000000, 0, 17, m_impl->spi_mmc);
+        if (!err.empty()) warnings += "  [spi-mmc] " + err + "\n";
+    }
 
     err = gpio_open(gpio_chip, m_impl->gpio);
     if (!err.empty()) warnings += "  [gpio] " + err + "\n";
@@ -104,8 +113,14 @@ std::string Navigator::init(NavVersion nav, PiVersion pi) {
             if (err.empty() && id == 0x60) {
                 m_impl->nav_version = NAV_V2;
             } else {
+                // Not a BMP390; probe the BMP280 (NAV_V1) chip-id at 0xD0.
                 err = i2c_read_reg(m_impl->i2c_sensor_fd, 0xD0, id);
-                m_impl->nav_version = (err.empty() && id == 0x58) ? NAV_V1 : NAV_V1;
+                if (err.empty() && id == 0x58) {
+                    m_impl->nav_version = NAV_V1;
+                } else {
+                    m_impl->nav_version = NAV_V1;  // default; unrecognized baro id
+                    warnings += "  [nav-detect] unrecognized barometer chip id; defaulting to NAV_V1\n";
+                }
             }
         } else {
             m_impl->nav_version = NAV_V1;
@@ -135,14 +150,14 @@ std::string Navigator::init(NavVersion nav, PiVersion pi) {
         if (!err.empty()) warnings += "  [ads1115] " + err + "\n";
     }
 
-    if (m_impl->spi_imu_fd >= 0) {
-        err = icm20689_init(m_impl->spi_imu_fd);
+    if (m_impl->spi_imu.fd >= 0) {
+        err = icm20689_init(m_impl->spi_imu);
         m_impl->imu_ok = err.empty();
         if (!err.empty()) warnings += "  [icm20689] " + err + "\n";
     }
 
-    if (m_impl->spi_mmc_fd >= 0) {
-        err = mmc5983_init(m_impl->spi_mmc_fd);
+    if (m_impl->spi_mmc.fd >= 0) {
+        err = mmc5983_init(m_impl->spi_mmc);
         m_impl->mmc_ok = err.empty();
         if (!err.empty()) warnings += "  [mmc5983] " + err + "\n";
     }
@@ -178,8 +193,8 @@ void Navigator::shutdown() {
     gpio_close(m_impl->gpio);
     i2c_close(m_impl->i2c_sensor_fd);
     i2c_close(m_impl->i2c_pwm_fd);
-    spi_close(m_impl->spi_imu_fd);
-    spi_close(m_impl->spi_mmc_fd);
+    spi_close(m_impl->spi_imu);
+    spi_close(m_impl->spi_mmc);
 
     m_impl->baro_ok = m_impl->imu_ok = m_impl->ak_ok = m_impl->mmc_ok = false;
     m_impl->adc_ok = m_impl->pwm_ok = m_impl->leak_ok = m_impl->led_ok = m_impl->neo_ok = false;
@@ -194,7 +209,7 @@ PiVersion Navigator::detected_pi() const { return m_impl->pi_version; }
 
 std::string Navigator::configure_imu(const ICM_Config& cfg) {
     if (!m_impl->imu_ok) return "configure_imu: IMU not initialized";
-    return icm20689_configure(m_impl->spi_imu_fd, cfg);
+    return icm20689_configure(m_impl->spi_imu, cfg);
 }
 
 std::string Navigator::configure_ak09915(const AK09915_Config& cfg) {
@@ -204,7 +219,7 @@ std::string Navigator::configure_ak09915(const AK09915_Config& cfg) {
 
 std::string Navigator::configure_mmc5983(const MMC5983_Config& cfg) {
     if (!m_impl->mmc_ok) return "configure_mmc5983: MMC5983 not initialized";
-    return mmc5983_configure(m_impl->spi_mmc_fd, cfg);
+    return mmc5983_configure(m_impl->spi_mmc, cfg);
 }
 
 std::string Navigator::configure_baro(const BARO_Config& cfg) {
@@ -230,13 +245,13 @@ std::string Navigator::configure_pwm(const PCA9685_Config& cfg) {
 std::string Navigator::read_accel(NavAxisData& out) {
     out = {};
     if (!m_impl->imu_ok) return "read_accel: IMU (ICM20689) not initialized";
-    return icm20689_read_accel(m_impl->spi_imu_fd, out.x, out.y, out.z);
+    return icm20689_read_accel(m_impl->spi_imu, out.x, out.y, out.z);
 }
 
 std::string Navigator::read_gyro(NavAxisData& out) {
     out = {};
     if (!m_impl->imu_ok) return "read_gyro: IMU (ICM20689) not initialized";
-    return icm20689_read_gyro(m_impl->spi_imu_fd, out.x, out.y, out.z);
+    return icm20689_read_gyro(m_impl->spi_imu, out.x, out.y, out.z);
 }
 
 std::string Navigator::read_mag_ak09915(NavAxisData& out) {
@@ -248,7 +263,7 @@ std::string Navigator::read_mag_ak09915(NavAxisData& out) {
 std::string Navigator::read_mag_mmc5983(NavAxisData& out) {
     out = {};
     if (!m_impl->mmc_ok) return "read_mag_mmc5983: MMC5983 not initialized";
-    return mmc5983_read(m_impl->spi_mmc_fd, out.x, out.y, out.z);
+    return mmc5983_read(m_impl->spi_mmc, out.x, out.y, out.z);
 }
 
 std::string Navigator::read_baro(NavBaroData& out) {

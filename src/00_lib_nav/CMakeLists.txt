@@ -1,4 +1,4 @@
-add_library(navigator_cpp STATIC nav.cpp)
+add_library(navigator_cpp SHARED nav.cpp)
 
 target_include_directories(navigator_cpp
     PUBLIC  ${CMAKE_SOURCE_DIR}/include

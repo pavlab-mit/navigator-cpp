@@ -39,7 +39,7 @@ static int16_t to_int16(uint8_t hi, uint8_t lo) {
     return (int16_t)((hi << 8) | lo);
 }
 
-std::string icm20689_init(int spi_fd) {
+std::string icm20689_init(SpiDevice& spi_fd) {
     s_icm_ok = false;
 
     uint8_t who = 0;
@@ -71,7 +71,7 @@ std::string icm20689_init(int spi_fd) {
     return "";
 }
 
-std::string icm20689_configure(int spi_fd, const ICM_Config& cfg) {
+std::string icm20689_configure(SpiDevice& spi_fd, const ICM_Config& cfg) {
     if (!s_icm_ok) return "icm20689_configure: sensor not initialized";
 
     std::string err;
@@ -99,7 +99,7 @@ std::string icm20689_configure(int spi_fd, const ICM_Config& cfg) {
     return "";
 }
 
-std::string icm20689_read_accel(int spi_fd, float& ax, float& ay, float& az) {
+std::string icm20689_read_accel(SpiDevice& spi_fd, float& ax, float& ay, float& az) {
     ax = ay = az = 0.0f;
     if (!s_icm_ok) return "icm20689_read_accel: sensor not initialized";
 
@@ -113,7 +113,7 @@ std::string icm20689_read_accel(int spi_fd, float& ax, float& ay, float& az) {
     return "";
 }
 
-std::string icm20689_read_gyro(int spi_fd, float& gx, float& gy, float& gz) {
+std::string icm20689_read_gyro(SpiDevice& spi_fd, float& gx, float& gy, float& gz) {
     gx = gy = gz = 0.0f;
     if (!s_icm_ok) return "icm20689_read_gyro: sensor not initialized";
 

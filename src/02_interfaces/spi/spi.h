@@ -3,9 +3,20 @@
 #include <cstdint>
 #include <string>
 
-std::string spi_open(const char* dev_path, uint32_t speed_hz, uint8_t mode, int& fd_out);
-void spi_close(int& fd);
-std::string spi_transfer(int fd, const uint8_t* tx, uint8_t* rx, int len);
-std::string spi_write(int fd, const uint8_t* tx, int len);
-std::string spi_read_reg(int fd, uint8_t reg, uint8_t* data, int len);
-std::string spi_write_reg(int fd, uint8_t reg, uint8_t value);
+// SPI device handle — wraps fd + optional manual chip select GPIO
+struct SpiDevice {
+    int fd = -1;
+    int cs_pin = -1;     // -1 = no manual CS (kernel manages it)
+    bool cs_active = false;
+};
+
+// Open an SPI device. If cs_gpio >= 0, that pin is used as a manual chip select
+// via sysfs GPIO (exported, set as output, driven high = deselected).
+// This allows multiple devices on the same spidev node (e.g., spidev1.0).
+std::string spi_open(const char* dev_path, uint32_t speed_hz, uint8_t mode,
+                      int cs_gpio, SpiDevice& dev_out);
+void spi_close(SpiDevice& dev);
+std::string spi_transfer(SpiDevice& dev, const uint8_t* tx, uint8_t* rx, int len);
+std::string spi_write(SpiDevice& dev, const uint8_t* tx, int len);
+std::string spi_read_reg(SpiDevice& dev, uint8_t reg, uint8_t* data, int len);
+std::string spi_write_reg(SpiDevice& dev, uint8_t reg, uint8_t value);

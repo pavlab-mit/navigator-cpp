@@ -15,7 +15,7 @@
 static const float SCALE = 800.0f / 131072.0f;
 static bool s_mmc_ok = false;
 
-std::string mmc5983_init(int spi_fd) {
+std::string mmc5983_init(SpiDevice& spi_fd) {
     s_mmc_ok = false;
 
     uint8_t id = 0;
@@ -41,7 +41,7 @@ std::string mmc5983_init(int spi_fd) {
     return "";
 }
 
-std::string mmc5983_configure(int spi_fd, const MMC5983_Config& cfg) {
+std::string mmc5983_configure(SpiDevice& spi_fd, const MMC5983_Config& cfg) {
     if (!s_mmc_ok) return "mmc5983_configure: sensor not initialized";
 
     std::string err;
@@ -63,7 +63,7 @@ std::string mmc5983_configure(int spi_fd, const MMC5983_Config& cfg) {
     return "";
 }
 
-std::string mmc5983_read(int spi_fd, float& mx, float& my, float& mz) {
+std::string mmc5983_read(SpiDevice& spi_fd, float& mx, float& my, float& mz) {
     mx = my = mz = 0.0f;
     if (!s_mmc_ok) return "mmc5983_read: sensor not initialized";
 
