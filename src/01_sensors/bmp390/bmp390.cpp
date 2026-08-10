@@ -99,12 +99,31 @@ std::string bmp390_read(int i2c_fd, float& pressure_kpa, float& temperature_c) {
     std::string err = i2c_set_slave(i2c_fd, 0x76);
     if (!err.empty()) return "bmp390_read: " + err;
 
-    struct bmp3_data data;
-    int8_t rc = bmp3_get_sensor_data(BMP3_PRESS_TEMP, &data, &s_dev);
+    uint8_t reg[BMP3_LEN_P_T_DATA] = {0};
+    int8_t rc = bmp3_get_regs(BMP3_REG_DATA, reg, BMP3_LEN_P_T_DATA, &s_dev);
     if (rc != BMP3_OK)
-        return "bmp390_read: bmp3_get_sensor_data failed, rc=" + std::to_string(rc);
+        return "bmp390_read: bmp3_get_regs failed, rc=" + std::to_string(rc);
 
-    pressure_kpa = (float)(data.pressure / 1000.0);
-    temperature_c = (float)data.temperature;
+    double up = (double)((uint32_t)reg[0] | ((uint32_t)reg[1] << 8) | ((uint32_t)reg[2] << 16));
+    double ut = (double)((uint32_t)reg[3] | ((uint32_t)reg[4] << 8) | ((uint32_t)reg[5] << 16));
+
+    // Datasheet App. A 8.5/8.6 - same math as bmp3.c compensate_*(), without the
+    // 300-1250 hPa clamp. That clamp returns BMP3_W_MIN_PRES, which the old code
+    // treated as an error, so a hard vacuum reported 0.00 kPa / 0.00 C instead of
+    // an extrapolated value. Outside 30-125 kPa the result is uncalibrated:
+    // monotonic and fine for leak-down trends, no accuracy guarantee.
+    const struct bmp3_quantized_calib_data* c = &s_dev.calib_data.quantized_calib_data;
+
+    double d1 = ut - c->par_t1;
+    double t_lin = (d1 * c->par_t2) + (d1 * d1) * c->par_t3;
+
+    double o1 = c->par_p5 + c->par_p6 * t_lin + c->par_p7 * t_lin * t_lin
+                + c->par_p8 * t_lin * t_lin * t_lin;
+    double o2 = up * (c->par_p1 + c->par_p2 * t_lin + c->par_p3 * t_lin * t_lin
+                + c->par_p4 * t_lin * t_lin * t_lin);
+    double o3 = up * up * (c->par_p9 + c->par_p10 * t_lin) + up * up * up * c->par_p11;
+
+    temperature_c = (float)t_lin;
+    pressure_kpa = (float)((o1 + o2 + o3) / 1000.0);
     return "";
 }
