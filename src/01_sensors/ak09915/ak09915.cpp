@@ -28,10 +28,18 @@ std::string ak09915_init(int i2c_fd) {
 
     err = i2c_write_reg(i2c_fd, AK09915_REG_CNTL2, 0x00);
     if (!err.empty()) return "ak09915_init: power down: " + err;
-    usleep(100);
+    // Datasheet minimum is 100us in power-down before the next mode
+    // write; the yip_fs bench Navigator's chip NACKs the mode write
+    // right at that boundary (reset and power-down ACK fine). Wait a
+    // comfortable 1 ms instead, and retry once before failing.
+    usleep(1000);
 
     // Default: continuous 200Hz
     err = i2c_write_reg(i2c_fd, AK09915_REG_CNTL2, AK_CONT_200HZ);
+    if (!err.empty()) {
+        usleep(1000);
+        err = i2c_write_reg(i2c_fd, AK09915_REG_CNTL2, AK_CONT_200HZ);
+    }
     if (!err.empty()) return "ak09915_init: set mode: " + err;
 
     s_ak_ok = true;
