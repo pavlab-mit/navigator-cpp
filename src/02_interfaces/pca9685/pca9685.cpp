@@ -9,7 +9,20 @@
 #define PCA9685_MODE1     0x00
 #define PCA9685_MODE2     0x01
 #define PCA9685_LED0_ON_L 0x06
+#define PCA9685_ALL_LED_OFF_H 0xFD
 #define PCA9685_PRE_SCALE 0xFE
+
+// MODE1 bit 7 (RESTART) is write-1-to-clear and is SET by the chip
+// when SLEEP is written while PWM channels are running; after wake,
+// all outputs stay OFF until software writes a 1 back to it. The
+// chip is powered continuously, so a previous process routinely
+// leaves channels running and the next init used to trip this on
+// alternating launches (ESC panic, bench-confirmed 2026-08-14 --
+// see moos-ivp-blueboat docs/rc_controllers.md section 8.3). Rules:
+// stop the channels before any SLEEP write, never blindly write a
+// stale bit 7 back in a read-modify-write, and after any wake give
+// the oscillator 500 us then clear a pending RESTART explicitly.
+#define PCA9685_MODE1_RESTART 0x80
 
 static const float EXT_CLOCK_HZ = 24576000.0f;
 static bool s_pca_ok = false;
@@ -23,6 +36,13 @@ std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
 
     err = gpio_request_output(gpio, oe_pin, 1, "pca9685-oe");
     if (!err.empty()) return "pca9685_init: OE pin: " + err;
+
+    // Stop all PWM channels BEFORE writing SLEEP, so the sleep below
+    // can never catch a running counter and set RESTART-pending (the
+    // alternating-launch trap; see note at PCA9685_MODE1_RESTART).
+    // OE is already high here, so nothing downstream sees a glitch.
+    err = i2c_write_reg(i2c_fd, PCA9685_ALL_LED_OFF_H, 0x10);
+    if (!err.empty()) return "pca9685_init: all-off: " + err;
 
     err = i2c_write_reg(i2c_fd, PCA9685_MODE1, 0x10);
     if (!err.empty()) return "pca9685_init: sleep: " + err;
@@ -38,6 +58,18 @@ std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
 
     err = i2c_write_reg(i2c_fd, PCA9685_MODE1, 0x60);
     if (!err.empty()) return "pca9685_init: auto-increment: " + err;
+
+    // Clear any RESTART still pending from a previous process (e.g.
+    // one that slept the chip and died before waking it). Write-1-to-
+    // clear; all channels are off, so nothing restarts. The >=500us
+    // post-wake oscillator delay is covered by the usleep above.
+    uint8_t mode1 = 0;
+    err = i2c_read_reg(i2c_fd, PCA9685_MODE1, mode1);
+    if (!err.empty()) return "pca9685_init: read mode1: " + err;
+    if (mode1 & PCA9685_MODE1_RESTART) {
+        err = i2c_write_reg(i2c_fd, PCA9685_MODE1, mode1);
+        if (!err.empty()) return "pca9685_init: clear restart: " + err;
+    }
 
     s_pca_ok = true;
     return "";
@@ -82,6 +114,10 @@ std::string pca9685_set_frequency(int i2c_fd, float freq_hz) {
     err = i2c_read_reg(i2c_fd, PCA9685_MODE1, mode1);
     if (!err.empty()) return "pca9685_set_frequency: read mode1: " + err;
 
+    // Never write a stale RESTART bit back: bit 7 is write-1-to-clear
+    // with order-dependent side effects (see PCA9685_MODE1_RESTART).
+    mode1 &= (uint8_t)~PCA9685_MODE1_RESTART;
+
     err = i2c_write_reg(i2c_fd, PCA9685_MODE1, (mode1 & 0xEF) | 0x10);
     if (!err.empty()) return "pca9685_set_frequency: sleep: " + err;
 
@@ -91,6 +127,19 @@ std::string pca9685_set_frequency(int i2c_fd, float freq_hz) {
     err = i2c_write_reg(i2c_fd, PCA9685_MODE1, mode1);
     if (!err.empty()) return "pca9685_set_frequency: restore: " + err;
     usleep(500);
+
+    // If the sleep above caught running channels, RESTART is now
+    // pending and the outputs are held off; write bit 7 = 1 (the
+    // 500us oscillator delay has elapsed) so they resume with their
+    // pre-sleep values. A frequency change on a running chip is then
+    // glitch-free instead of silently killing the outputs.
+    uint8_t m2 = 0;
+    err = i2c_read_reg(i2c_fd, PCA9685_MODE1, m2);
+    if (!err.empty()) return "pca9685_set_frequency: read restart: " + err;
+    if (m2 & PCA9685_MODE1_RESTART) {
+        err = i2c_write_reg(i2c_fd, PCA9685_MODE1, m2);
+        if (!err.empty()) return "pca9685_set_frequency: restart: " + err;
+    }
     s_freq_hz = freq_hz;
 
     return "";

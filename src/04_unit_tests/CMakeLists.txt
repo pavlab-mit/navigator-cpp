@@ -11,6 +11,7 @@ set(TESTS
     test_mmc5983
     test_neopixel
     test_pca9685
+    test_pca9685_restart
     test_version_detect
 )
 
