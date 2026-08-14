@@ -9,6 +9,16 @@
 #include <linux/i2c-dev.h>
 #include <cstring>
 #include <cerrno>
+#include <cstdio>
+
+// Hex-format a byte for error strings. std::to_string prints decimal,
+// which glued after a "0x" prefix produced misleading messages (e.g.
+// CNTL2 = 0x31 = 49 dec reported as "reg 0x49").
+static std::string hex2(uint8_t v) {
+    char buf[5];
+    snprintf(buf, sizeof(buf), "0x%02X", v);
+    return std::string(buf);
+}
 
 std::string i2c_open(const char* bus_path, int& fd_out) {
     fd_out = -1;
@@ -27,8 +37,8 @@ void i2c_close(int& fd) {
 std::string i2c_set_slave(int fd, uint8_t addr) {
     if (fd < 0) return "i2c_set_slave: invalid fd";
     if (ioctl(fd, I2C_SLAVE, addr) < 0)
-        return std::string("i2c_set_slave: ioctl failed for addr 0x")
-               + std::to_string(addr) + ": " + strerror(errno);
+        return std::string("i2c_set_slave: ioctl failed for addr ")
+               + hex2(addr) + ": " + strerror(errno);
     return "";
 }
 
@@ -37,8 +47,8 @@ std::string i2c_write_reg(int fd, uint8_t reg, uint8_t value) {
     uint8_t buf[2] = {reg, value};
     ssize_t ret = write(fd, buf, 2);
     if (ret != 2)
-        return std::string("i2c_write_reg: write failed for reg 0x")
-               + std::to_string(reg) + ": " + strerror(errno);
+        return std::string("i2c_write_reg: write failed for reg ")
+               + hex2(reg) + ": " + strerror(errno);
     return "";
 }
 
@@ -51,8 +61,8 @@ std::string i2c_write_reg_buf(int fd, uint8_t reg, const uint8_t* data, int len)
     memcpy(buf + 1, data, len);
     ssize_t ret = write(fd, buf, len + 1);
     if (ret != len + 1)
-        return std::string("i2c_write_reg_buf: write failed for reg 0x")
-               + std::to_string(reg) + ": " + strerror(errno);
+        return std::string("i2c_write_reg_buf: write failed for reg ")
+               + hex2(reg) + ": " + strerror(errno);
     return "";
 }
 
@@ -70,8 +80,8 @@ std::string i2c_read_reg_buf(int fd, uint8_t reg, uint8_t* data, int len) {
         return std::string("i2c_read_reg_buf: write reg addr failed: ") + strerror(errno);
     ret = read(fd, data, len);
     if (ret != len)
-        return std::string("i2c_read_reg_buf: read failed for reg 0x")
-               + std::to_string(reg) + ": " + strerror(errno);
+        return std::string("i2c_read_reg_buf: read failed for reg ")
+               + hex2(reg) + ": " + strerror(errno);
     return "";
 }
 
