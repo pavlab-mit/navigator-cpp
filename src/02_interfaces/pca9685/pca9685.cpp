@@ -105,12 +105,6 @@ std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
     err = clear_all_channels_full_off(i2c_fd);
     if (!err.empty()) return "pca9685_init: clear all-off: " + err;
 
-    uint8_t all_off_h = 0;
-    err = i2c_read_reg(i2c_fd, PCA9685_ALL_LED_OFF_H, all_off_h);
-    if (!err.empty()) return "pca9685_init: verify all-off: " + err;
-    if (all_off_h & PCA9685_FULL_OFF)
-        return "pca9685_init: global full-off remained asserted";
-
     s_pca_ok = true;
     s_freq_hz = DEFAULT_FREQUENCY_HZ;
     return "";
@@ -127,11 +121,12 @@ std::string pca9685_shutdown(int i2c_fd, GpioChip* gpio, int oe_pin) {
     if (i2c_fd >= 0) {
         std::string err = i2c_set_slave(i2c_fd, PCA9685_ADDR);
         if (err.empty()) err = set_all_channels_full_off(i2c_fd);
-        if (err.empty()) {
-            uint8_t all_off_h = 0;
-            err = i2c_read_reg(i2c_fd, PCA9685_ALL_LED_OFF_H, all_off_h);
-            if (err.empty() && !(all_off_h & PCA9685_FULL_OFF))
-                err = "global full-off did not latch";
+        if (err.empty()) err = initialize_channel_registers_off(i2c_fd);
+        for (int channel = 0; channel < 16 && err.empty(); ++channel) {
+            uint8_t off_h = 0;
+            err = i2c_read_reg(i2c_fd, PCA9685_LED0_ON_L + 4 * channel + 3, off_h);
+            if (err.empty() && !(off_h & PCA9685_FULL_OFF))
+                err = "channel " + std::to_string(channel) + " full-off did not latch";
         }
         if (first_error.empty() && !err.empty())
             first_error = "pca9685_shutdown: orderly all-off: " + err;

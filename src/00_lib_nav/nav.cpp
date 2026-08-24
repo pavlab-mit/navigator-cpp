@@ -118,11 +118,14 @@ std::string navigator_force_pwm_off(std::string* detail) {
             err = i2c_write_reg_buf(fd, static_cast<uint8_t>(0x06 + 4 * channel),
                                     full_off, 4);
 
-        uint8_t all_off_h = 0;
-        if (err.empty()) err = i2c_read_reg(fd, 0xFD, all_off_h);
-        verified = err.empty() && (all_off_h & 0x10);
+        verified = err.empty();
+        for (int channel = 0; channel < 16 && verified; ++channel) {
+            uint8_t off_h = 0;
+            err = i2c_read_reg(fd, static_cast<uint8_t>(0x09 + 4 * channel), off_h);
+            verified = err.empty() && (off_h & 0x10);
+        }
         if (!verified && first_error.empty())
-            first_error = err.empty() ? "global full-off did not latch" : err;
+            first_error = err.empty() ? "channel full-off did not latch" : err;
     }
     i2c_close(fd);
 
@@ -130,7 +133,7 @@ std::string navigator_force_pwm_off(std::string* detail) {
         return "navigator_force_pwm_off: " + first_error;
 
     if (detail)
-        *detail = "PCA9685 global and channel full-off verified; OE unchanged";
+        *detail = "PCA9685 global full-off written and all channels verified off; OE unchanged";
     return "";
 }
 
