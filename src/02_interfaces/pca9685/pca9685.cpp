@@ -9,11 +9,41 @@
 #define PCA9685_MODE1     0x00
 #define PCA9685_MODE2     0x01
 #define PCA9685_LED0_ON_L 0x06
+#define PCA9685_ALL_LED_OFF_H 0xFD
 #define PCA9685_PRE_SCALE 0xFE
+
+#define PCA9685_MODE1_RESTART 0x80
+#define PCA9685_MODE1_EXTCLK  0x40
+#define PCA9685_MODE1_AI      0x20
+#define PCA9685_MODE1_SLEEP   0x10
+#define PCA9685_FULL_OFF      0x10
 
 static const float EXT_CLOCK_HZ = 24576000.0f;
 static bool s_pca_ok = false;
 static float s_freq_hz = 50.0f;  // Track current frequency for us conversion
+
+static std::string set_all_channels_full_off(int i2c_fd) {
+    // ALL_LED_OFF is the PCA9685's documented orderly-stop mechanism. It
+    // prevents a subsequent SLEEP write from arming the RESTART trap.
+    return i2c_write_reg(i2c_fd, PCA9685_ALL_LED_OFF_H, PCA9685_FULL_OFF);
+}
+
+static std::string clear_all_channels_full_off(int i2c_fd) {
+    return i2c_write_reg(i2c_fd, PCA9685_ALL_LED_OFF_H, 0x00);
+}
+
+static std::string initialize_channel_registers_off(int i2c_fd) {
+    // An orderly all-off invalidates the per-channel PWM state. Initialize
+    // every channel explicitly before releasing the global override.
+    const uint8_t off[4] = {0x00, 0x00, 0x00, PCA9685_FULL_OFF};
+    for (int channel = 0; channel < 16; ++channel) {
+        const uint8_t reg = PCA9685_LED0_ON_L + 4 * channel;
+        std::string err = i2c_write_reg_buf(i2c_fd, reg, off, 4);
+        if (!err.empty())
+            return "initialize channel " + std::to_string(channel) + ": " + err;
+    }
+    return "";
+}
 
 std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
     s_pca_ok = false;
@@ -23,24 +53,74 @@ std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
 
     err = gpio_request_output(gpio, oe_pin, 1, "pca9685-oe");
     if (!err.empty()) return "pca9685_init: OE pin: " + err;
+    int oe_value = -1;
+    err = gpio_get(gpio, oe_pin, oe_value);
+    if (!err.empty() || oe_value != 1)
+        return "pca9685_init: OE did not enter safe disabled state"
+               + (err.empty() ? std::string() : ": " + err);
 
-    err = i2c_write_reg(i2c_fd, PCA9685_MODE1, 0x10);
+    err = set_all_channels_full_off(i2c_fd);
+    if (!err.empty()) return "pca9685_init: orderly all-off: " + err;
+
+    err = i2c_write_reg(i2c_fd, PCA9685_MODE1, PCA9685_MODE1_SLEEP);
     if (!err.empty()) return "pca9685_init: sleep: " + err;
     usleep(1000);
 
-    err = i2c_write_reg(i2c_fd, PCA9685_MODE1, 0x50);
+    err = i2c_write_reg(i2c_fd, PCA9685_MODE1,
+                        PCA9685_MODE1_SLEEP | PCA9685_MODE1_EXTCLK);
     if (!err.empty()) return "pca9685_init: ext clock: " + err;
     usleep(1000);
 
-    err = i2c_write_reg(i2c_fd, PCA9685_MODE1, 0x40);
+    err = i2c_write_reg(i2c_fd, PCA9685_MODE1, PCA9685_MODE1_EXTCLK);
     if (!err.empty()) return "pca9685_init: wake: " + err;
     usleep(1000);
 
-    err = i2c_write_reg(i2c_fd, PCA9685_MODE1, 0x60);
+    err = i2c_write_reg(i2c_fd, PCA9685_MODE1,
+                        PCA9685_MODE1_EXTCLK | PCA9685_MODE1_AI);
     if (!err.empty()) return "pca9685_init: auto-increment: " + err;
+
+    uint8_t mode1 = 0;
+    err = i2c_read_reg(i2c_fd, PCA9685_MODE1, mode1);
+    if (!err.empty()) return "pca9685_init: read restart state: " + err;
+    if (mode1 & PCA9685_MODE1_RESTART) {
+        // SLEEP has been clear for more than the datasheet's required 500 us.
+        err = i2c_write_reg(i2c_fd, PCA9685_MODE1, mode1);
+        if (!err.empty()) return "pca9685_init: restart channels: " + err;
+    }
+
+    err = initialize_channel_registers_off(i2c_fd);
+    if (!err.empty()) return "pca9685_init: " + err;
+    err = clear_all_channels_full_off(i2c_fd);
+    if (!err.empty()) return "pca9685_init: clear all-off: " + err;
+
+    uint8_t all_off_h = 0;
+    err = i2c_read_reg(i2c_fd, PCA9685_ALL_LED_OFF_H, all_off_h);
+    if (!err.empty()) return "pca9685_init: verify all-off: " + err;
+    if (all_off_h & PCA9685_FULL_OFF)
+        return "pca9685_init: global full-off remained asserted";
 
     s_pca_ok = true;
     return "";
+}
+
+std::string pca9685_shutdown(int i2c_fd, GpioChip* gpio, int oe_pin) {
+    std::string first_error;
+
+    // Physical output disable is the highest-priority shutdown action.
+    if (gpio) {
+        std::string err = gpio_set(gpio, oe_pin, 1);
+        if (!err.empty()) first_error = "pca9685_shutdown: disable OE: " + err;
+    }
+    if (i2c_fd >= 0) {
+        std::string err = i2c_set_slave(i2c_fd, PCA9685_ADDR);
+        if (err.empty()) err = set_all_channels_full_off(i2c_fd);
+        if (first_error.empty() && !err.empty())
+            first_error = "pca9685_shutdown: orderly all-off: " + err;
+    }
+
+    s_pca_ok = false;
+    s_freq_hz = 50.0f;
+    return first_error;
 }
 
 std::string pca9685_configure(int i2c_fd, const PCA9685_Config& cfg) {
@@ -82,6 +162,9 @@ std::string pca9685_set_frequency(int i2c_fd, float freq_hz) {
     err = i2c_read_reg(i2c_fd, PCA9685_MODE1, mode1);
     if (!err.empty()) return "pca9685_set_frequency: read mode1: " + err;
 
+    // Never replay an inherited RESTART bit during the sleep transition.
+    mode1 &= (uint8_t)~PCA9685_MODE1_RESTART;
+
     err = i2c_write_reg(i2c_fd, PCA9685_MODE1, (mode1 & 0xEF) | 0x10);
     if (!err.empty()) return "pca9685_set_frequency: sleep: " + err;
 
@@ -91,6 +174,14 @@ std::string pca9685_set_frequency(int i2c_fd, float freq_hz) {
     err = i2c_write_reg(i2c_fd, PCA9685_MODE1, mode1);
     if (!err.empty()) return "pca9685_set_frequency: restore: " + err;
     usleep(500);
+
+    uint8_t restarted_mode1 = 0;
+    err = i2c_read_reg(i2c_fd, PCA9685_MODE1, restarted_mode1);
+    if (!err.empty()) return "pca9685_set_frequency: read restart state: " + err;
+    if (restarted_mode1 & PCA9685_MODE1_RESTART) {
+        err = i2c_write_reg(i2c_fd, PCA9685_MODE1, restarted_mode1);
+        if (!err.empty()) return "pca9685_set_frequency: restart channels: " + err;
+    }
     s_freq_hz = freq_hz;
 
     return "";

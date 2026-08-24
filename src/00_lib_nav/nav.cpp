@@ -189,6 +189,8 @@ std::string Navigator::init(NavVersion nav, PiVersion pi) {
 void Navigator::shutdown() {
     if (!m_impl->initialized) return;
 
+    if (m_impl->i2c_pwm_fd >= 0 && m_impl->gpio)
+        (void)pca9685_shutdown(m_impl->i2c_pwm_fd, m_impl->gpio, Impl::OE_PIN);
     neopixel_shutdown();
     gpio_close(m_impl->gpio);
     i2c_close(m_impl->i2c_sensor_fd);

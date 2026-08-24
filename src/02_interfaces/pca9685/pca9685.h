@@ -7,6 +7,7 @@
 struct GpioChip;
 
 std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin);
+std::string pca9685_shutdown(int i2c_fd, GpioChip* gpio, int oe_pin);
 std::string pca9685_configure(int i2c_fd, const PCA9685_Config& cfg);
 std::string pca9685_enable(GpioChip* gpio, int oe_pin, bool enable);
 std::string pca9685_set_frequency(int i2c_fd, float freq_hz);
