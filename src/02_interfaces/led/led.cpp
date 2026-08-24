@@ -10,7 +10,11 @@ std::string led_init(GpioChip* gpio) {
     s_led_ok = false;
     for (int i = 0; i < 3; i++) {
         std::string err = gpio_request_output(gpio, LED_PINS[i], 1, "nav-led");
-        if (!err.empty()) return "led_init: pin " + std::to_string(LED_PINS[i]) + ": " + err;
+        if (!err.empty()) {
+            for (int claimed = 0; claimed < i; ++claimed)
+                gpio_release(gpio, LED_PINS[claimed]);
+            return "led_init: pin " + std::to_string(LED_PINS[i]) + ": " + err;
+        }
         usleep(30000);
     }
     s_led_ok = true;

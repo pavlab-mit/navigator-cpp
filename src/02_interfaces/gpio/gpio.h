@@ -5,6 +5,7 @@
 struct GpioChip;
 
 std::string gpio_open(const char* chip_path, GpioChip*& chip_out);
+std::string gpio_open_by_label(const char* chip_label, GpioChip*& chip_out);
 void gpio_close(GpioChip*& chip);
 std::string gpio_request_output(GpioChip* chip, int pin, int initial_value, const char* label);
 std::string gpio_request_input(GpioChip* chip, int pin, const char* label);

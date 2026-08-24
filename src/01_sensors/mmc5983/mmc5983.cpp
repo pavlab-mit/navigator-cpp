@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 #include <cstring>
+#include <cstdio>
 
 #define MMC5983_REG_XOUT0      0x00
 #define MMC5983_REG_STATUS     0x08
@@ -15,6 +16,12 @@
 static const float SCALE = 800.0f / 131072.0f;
 static bool s_mmc_ok = false;
 
+static std::string hex_byte(uint8_t value) {
+    char out[5];
+    snprintf(out, sizeof(out), "0x%02X", value);
+    return out;
+}
+
 std::string mmc5983_init(SpiDevice& spi_fd) {
     s_mmc_ok = false;
 
@@ -22,7 +29,7 @@ std::string mmc5983_init(SpiDevice& spi_fd) {
     std::string err = spi_read_reg(spi_fd, MMC5983_REG_PRODUCT_ID, &id, 1);
     if (!err.empty()) return "mmc5983_init: read product id: " + err;
     if (id != MMC5983_PRODUCT_ID_VAL)
-        return "mmc5983_init: unexpected product id 0x" + std::to_string(id) + " (expected 0x30)";
+        return "mmc5983_init: unexpected product id " + hex_byte(id) + " (expected 0x30)";
 
     err = spi_write_reg(spi_fd, MMC5983_REG_CTRL1, 0x80);
     if (!err.empty()) return "mmc5983_init: software reset: " + err;

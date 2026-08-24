@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 #include <cmath>
+#include <cstdio>
 
 #define ICM20689_WHO_AM_I       0x75
 #define ICM20689_WHO_AM_I_VAL   0x98
@@ -19,6 +20,12 @@
 static float s_accel_scale = 9.80665f / 16384.0f;
 static float s_gyro_scale  = (float)(M_PI / 180.0) / 131.0f;
 static bool s_icm_ok = false;
+
+static std::string hex_byte(uint8_t value) {
+    char out[5];
+    snprintf(out, sizeof(out), "0x%02X", value);
+    return out;
+}
 
 static void update_scales(ICM_AccelRange ar, ICM_GyroRange gr) {
     switch (ar) {
@@ -46,7 +53,7 @@ std::string icm20689_init(SpiDevice& spi_fd) {
     std::string err = spi_read_reg(spi_fd, ICM20689_WHO_AM_I, &who, 1);
     if (!err.empty()) return "icm20689_init: read WHO_AM_I: " + err;
     if (who != ICM20689_WHO_AM_I_VAL && who != ICM20602_WHO_AM_I_VAL)
-        return "icm20689_init: unexpected WHO_AM_I 0x" + std::to_string(who)
+        return "icm20689_init: unexpected WHO_AM_I " + hex_byte(who)
                + " (expected 0x98 or 0x12)";
 
     err = spi_write_reg(spi_fd, ICM20689_PWR_MGMT_1, 0x80);

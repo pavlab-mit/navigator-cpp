@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 #include <cstring>
+#include <cstdio>
 
 #define BMP280_ADDR          0x76
 #define BMP280_REG_CALIB     0x88
@@ -16,6 +17,12 @@ static uint16_t dig_P1;
 static int16_t  dig_P2, dig_P3, dig_P4, dig_P5, dig_P6, dig_P7, dig_P8, dig_P9;
 static int32_t  t_fine;
 static bool s_bmp280_ok = false;
+
+static std::string hex_byte(uint8_t value) {
+    char out[5];
+    snprintf(out, sizeof(out), "0x%02X", value);
+    return out;
+}
 
 static std::string load_calibration(int fd) {
     uint8_t cal[26];
@@ -70,19 +77,52 @@ std::string bmp280_init(int i2c_fd) {
     err = i2c_read_reg(i2c_fd, 0xD0, chip_id);
     if (!err.empty()) return "bmp280_init: read chip id: " + err;
     if (chip_id != 0x58)
-        return "bmp280_init: unexpected chip id 0x" + std::to_string(chip_id) + " (expected 0x58)";
+        return "bmp280_init: unexpected chip id " + hex_byte(chip_id) + " (expected 0x58)";
 
     err = load_calibration(i2c_fd);
     if (!err.empty()) return err;
 
-    err = i2c_write_reg(i2c_fd, BMP280_REG_CONFIG, 0x10);
-    if (!err.empty()) return "bmp280_init: write config: " + err;
-
-    err = i2c_write_reg(i2c_fd, BMP280_REG_CTRL_MEAS, 0x57);
-    if (!err.empty()) return "bmp280_init: write ctrl_meas: " + err;
-
-    usleep(50000);
     s_bmp280_ok = true;
+    BARO_Config defaults;
+    defaults.press_os = BARO_OS_16X;
+    defaults.temp_os = BARO_OS_2X;
+    defaults.odr = BARO_ODR_50HZ;
+    defaults.iir = BARO_IIR_COEFF_15;
+    err = bmp280_configure(i2c_fd, defaults);
+    if (!err.empty()) {
+        s_bmp280_ok = false;
+        return "bmp280_init: defaults: " + err;
+    }
+    usleep(50000);
+    return err;
+}
+
+std::string bmp280_configure(int i2c_fd, const BARO_Config& cfg) {
+    if (!s_bmp280_ok) return "bmp280_configure: sensor not initialized";
+    std::string err = i2c_set_slave(i2c_fd, BMP280_ADDR);
+    if (!err.empty()) return "bmp280_configure: " + err;
+
+    auto oversampling = [](BARO_Oversampling value) -> uint8_t {
+        uint8_t code = static_cast<uint8_t>(value) + 1;
+        return code > 5 ? 5 : code;
+    };
+    const uint8_t osrs_t = oversampling(cfg.temp_os);
+    const uint8_t osrs_p = oversampling(cfg.press_os);
+    const uint8_t ctrl_meas = static_cast<uint8_t>((osrs_t << 5) | (osrs_p << 2) | 0x03);
+
+    // BMP280 exposes standby periods rather than a direct ODR. Choose the
+    // nearest non-faster supported period for the shared BARO rate enum.
+    static const uint8_t standby_by_odr[] = {0, 0, 0, 1, 1, 2, 3, 5};
+    uint8_t odr = static_cast<uint8_t>(cfg.odr);
+    if (odr > 7) odr = 7;
+    uint8_t filter = static_cast<uint8_t>(cfg.iir);
+    if (filter > 4) filter = 4;
+    const uint8_t config = static_cast<uint8_t>((standby_by_odr[odr] << 5) | (filter << 2));
+
+    err = i2c_write_reg(i2c_fd, BMP280_REG_CONFIG, config);
+    if (!err.empty()) return "bmp280_configure: write config: " + err;
+    err = i2c_write_reg(i2c_fd, BMP280_REG_CTRL_MEAS, ctrl_meas);
+    if (!err.empty()) return "bmp280_configure: write ctrl_meas: " + err;
     return "";
 }
 

@@ -189,6 +189,8 @@ struct PCA9685_Config {
     bool  open_drain   = false;
 };
 
+std::string navigator_force_pwm_off(std::string* detail = nullptr);
+
 // ═══════════════════════════════════════════════════════════════
 //  Navigator Class
 // ═══════════════════════════════════════════════════════════════
@@ -206,6 +208,7 @@ public:
     std::string init(NavVersion nav = NAV_AUTO, PiVersion pi = PI_AUTO);
     void shutdown();
     bool is_initialized() const;
+    bool is_pwm_ready() const;
     NavVersion detected_version() const;
     PiVersion  detected_pi() const;
 
@@ -229,6 +232,7 @@ public:
 
     std::string read_mag_ak09915(NavAxisData& out);
     std::string read_mag_mmc5983(NavAxisData& out);
+    std::string read_mag(NavAxisData& out);  // V1: AK09915, V2: MMC5983 with AK fallback
 
     // ─── Barometer (BMP280 or BMP390, I2C) ─────────────────
 

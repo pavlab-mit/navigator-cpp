@@ -15,7 +15,7 @@
 #include "neopixel.h"
 #include "attitude_estimator.h"
 
-#include <sys/stat.h>
+static const int PCA9685_OE_PIN = 26;
 
 // ─── Impl ───────────────────────────────────────────────────────
 
@@ -45,8 +45,6 @@ struct Navigator::Impl {
     bool led_ok   = false;
     bool neo_ok   = false;
 
-    static const int OE_PIN = 26;
-
     // Attitude estimator
     stateestimation::AttitudeEstimator ahrs;
 };
@@ -60,21 +58,84 @@ Navigator::~Navigator() {
     delete m_impl;
 }
 
-static bool file_exists(const char* path) {
-    struct stat st;
-    return stat(path, &st) == 0;
+static std::string open_gpio_for_pi(PiVersion requested, PiVersion& detected,
+                                    GpioChip*& gpio) {
+    std::string err;
+    if (requested == PI_AUTO || requested == PI_5) {
+        err = gpio_open_by_label("pinctrl-rp1", gpio);
+        if (err.empty()) { detected = PI_5; return ""; }
+        if (requested == PI_5) {
+            err = gpio_open("/dev/gpiochip4", gpio);
+            if (err.empty()) { detected = PI_5; return ""; }
+        }
+    }
+    if (requested == PI_AUTO || requested == PI_4) {
+        const char* labels[] = {"pinctrl-bcm2711", "pinctrl-bcm2835"};
+        for (const char* label : labels) {
+            err = gpio_open_by_label(label, gpio);
+            if (err.empty()) { detected = PI_4; return ""; }
+        }
+        err = gpio_open("/dev/gpiochip0", gpio);
+        if (err.empty()) { detected = PI_4; return ""; }
+    }
+    return "unable to find Raspberry Pi GPIO controller: " + err;
+}
+
+static std::string open_pwm_bus(PiVersion pi, int& fd) {
+    const char* pi5_first[] = {"/dev/i2c-3", "/dev/i2c-4"};
+    const char* pi4_first[] = {"/dev/i2c-4", "/dev/i2c-3"};
+    const char** candidates = (pi == PI_5) ? pi5_first : pi4_first;
+    std::string errors;
+    for (int i = 0; i < 2; ++i) {
+        int candidate_fd = -1;
+        std::string err = i2c_open(candidates[i], candidate_fd);
+        if (err.empty()) err = i2c_set_slave(candidate_fd, 0x40);
+        uint8_t mode1 = 0;
+        if (err.empty()) err = i2c_read_reg(candidate_fd, 0x00, mode1);
+        if (err.empty()) {
+            fd = candidate_fd;
+            return "";
+        }
+        i2c_close(candidate_fd);
+        errors += std::string(candidates[i]) + ": " + err + "; ";
+    }
+    return "PCA9685 not found on candidate PWM buses: " + errors;
+}
+
+std::string navigator_force_pwm_off(std::string* detail) {
+    int fd = -1;
+    std::string err = open_pwm_bus(PI_AUTO, fd);
+    if (!err.empty()) return "navigator_force_pwm_off: " + err;
+
+    std::string first_error;
+    bool verified = false;
+    for (int attempt = 0; attempt < 3 && !verified; ++attempt) {
+        err = i2c_set_slave(fd, 0x40);
+        if (err.empty()) err = i2c_write_reg(fd, 0xFD, 0x10);
+
+        const uint8_t full_off[4] = {0x00, 0x00, 0x00, 0x10};
+        for (int channel = 0; channel < 16 && err.empty(); ++channel)
+            err = i2c_write_reg_buf(fd, static_cast<uint8_t>(0x06 + 4 * channel),
+                                    full_off, 4);
+
+        uint8_t all_off_h = 0;
+        if (err.empty()) err = i2c_read_reg(fd, 0xFD, all_off_h);
+        verified = err.empty() && (all_off_h & 0x10);
+        if (!verified && first_error.empty())
+            first_error = err.empty() ? "global full-off did not latch" : err;
+    }
+    i2c_close(fd);
+
+    if (!verified)
+        return "navigator_force_pwm_off: " + first_error;
+
+    if (detail)
+        *detail = "PCA9685 global and channel full-off verified; OE unchanged";
+    return "";
 }
 
 std::string Navigator::init(NavVersion nav, PiVersion pi) {
     if (m_impl->initialized) return "Navigator::init: already initialized";
-
-    // Detect Pi version
-    m_impl->pi_version = (pi == PI_AUTO)
-        ? (file_exists("/dev/gpiochip4") ? PI_5 : PI_4)
-        : pi;
-
-    const char* gpio_chip = (m_impl->pi_version == PI_5) ? "/dev/gpiochip4" : "/dev/gpiochip0";
-    const char* pwm_i2c   = (m_impl->pi_version == PI_5) ? "/dev/i2c-3" : "/dev/i2c-4";
 
     // Open buses — collect warnings, don't abort on individual failures
     std::string warnings;
@@ -83,25 +144,27 @@ std::string Navigator::init(NavVersion nav, PiVersion pi) {
     err = i2c_open("/dev/i2c-1", m_impl->i2c_sensor_fd);
     if (!err.empty()) warnings += "  [i2c-1] " + err + "\n";
 
-    err = i2c_open(pwm_i2c, m_impl->i2c_pwm_fd);
+    err = open_gpio_for_pi(pi, m_impl->pi_version, m_impl->gpio);
+    if (!err.empty()) warnings += "  [gpio] " + err + "\n";
+
+    err = open_pwm_bus(m_impl->pi_version, m_impl->i2c_pwm_fd);
     if (!err.empty()) warnings += "  [pwm-i2c] " + err + "\n";
 
     // SPI for ICM20602: try spidev1.2 (kernel CS), fallback to spidev1.0 + GPIO 16 manual CS
-    err = spi_open("/dev/spidev1.2", 10000000, 0, -1, m_impl->spi_imu);
+    err = spi_open("/dev/spidev1.2", 10000000, 0, m_impl->gpio, -1, m_impl->spi_imu);
     if (!err.empty()) {
-        err = spi_open("/dev/spidev1.0", 10000000, 0, 16, m_impl->spi_imu);
+        err = spi_open("/dev/spidev1.0", 10000000, 0, m_impl->gpio, 16, m_impl->spi_imu);
         if (!err.empty()) warnings += "  [spi-imu] " + err + "\n";
     }
 
     // SPI for MMC5983: try spidev1.1 (kernel CS), fallback to spidev1.0 + GPIO 17 manual CS
-    err = spi_open("/dev/spidev1.1", 1000000, 0, -1, m_impl->spi_mmc);
-    if (!err.empty()) {
-        err = spi_open("/dev/spidev1.0", 1000000, 0, 17, m_impl->spi_mmc);
-        if (!err.empty()) warnings += "  [spi-mmc] " + err + "\n";
+    if (nav != NAV_V1) {
+        err = spi_open("/dev/spidev1.1", 1000000, 0, m_impl->gpio, -1, m_impl->spi_mmc);
+        if (!err.empty()) {
+            err = spi_open("/dev/spidev1.0", 1000000, 0, m_impl->gpio, 17, m_impl->spi_mmc);
+            if (!err.empty()) warnings += "  [spi-mmc] " + err + "\n";
+        }
     }
-
-    err = gpio_open(gpio_chip, m_impl->gpio);
-    if (!err.empty()) warnings += "  [gpio] " + err + "\n";
 
     // Detect Navigator version
     if (nav == NAV_AUTO && m_impl->i2c_sensor_fd >= 0) {
@@ -156,14 +219,14 @@ std::string Navigator::init(NavVersion nav, PiVersion pi) {
         if (!err.empty()) warnings += "  [icm20689] " + err + "\n";
     }
 
-    if (m_impl->spi_mmc.fd >= 0) {
+    if (m_impl->nav_version == NAV_V2 && m_impl->spi_mmc.fd >= 0) {
         err = mmc5983_init(m_impl->spi_mmc);
         m_impl->mmc_ok = err.empty();
         if (!err.empty()) warnings += "  [mmc5983] " + err + "\n";
     }
 
     if (m_impl->i2c_pwm_fd >= 0 && m_impl->gpio) {
-        err = pca9685_init(m_impl->i2c_pwm_fd, m_impl->gpio, Impl::OE_PIN);
+        err = pca9685_init(m_impl->i2c_pwm_fd, m_impl->gpio, PCA9685_OE_PIN);
         m_impl->pwm_ok = err.empty();
         if (!err.empty()) warnings += "  [pca9685] " + err + "\n";
     }
@@ -190,13 +253,13 @@ void Navigator::shutdown() {
     if (!m_impl->initialized) return;
 
     if (m_impl->i2c_pwm_fd >= 0 && m_impl->gpio)
-        (void)pca9685_shutdown(m_impl->i2c_pwm_fd, m_impl->gpio, Impl::OE_PIN);
+        (void)pca9685_shutdown(m_impl->i2c_pwm_fd, m_impl->gpio, PCA9685_OE_PIN);
     neopixel_shutdown();
+    spi_close(m_impl->spi_imu);
+    spi_close(m_impl->spi_mmc);
     gpio_close(m_impl->gpio);
     i2c_close(m_impl->i2c_sensor_fd);
     i2c_close(m_impl->i2c_pwm_fd);
-    spi_close(m_impl->spi_imu);
-    spi_close(m_impl->spi_mmc);
 
     m_impl->baro_ok = m_impl->imu_ok = m_impl->ak_ok = m_impl->mmc_ok = false;
     m_impl->adc_ok = m_impl->pwm_ok = m_impl->leak_ok = m_impl->led_ok = m_impl->neo_ok = false;
@@ -204,6 +267,7 @@ void Navigator::shutdown() {
 }
 
 bool Navigator::is_initialized() const { return m_impl->initialized; }
+bool Navigator::is_pwm_ready() const { return m_impl->initialized && m_impl->pwm_ok; }
 NavVersion Navigator::detected_version() const { return m_impl->nav_version; }
 PiVersion Navigator::detected_pi() const { return m_impl->pi_version; }
 
@@ -229,7 +293,7 @@ std::string Navigator::configure_baro(const BARO_Config& cfg) {
     if (m_impl->nav_version == NAV_V2)
         return bmp390_configure(m_impl->i2c_sensor_fd, cfg);
     else
-        return "configure_baro: BMP280 configuration not yet implemented";
+        return bmp280_configure(m_impl->i2c_sensor_fd, cfg);
 }
 
 std::string Navigator::configure_adc(const ADS1115_Config& cfg) {
@@ -268,6 +332,12 @@ std::string Navigator::read_mag_mmc5983(NavAxisData& out) {
     return mmc5983_read(m_impl->spi_mmc, out.x, out.y, out.z);
 }
 
+std::string Navigator::read_mag(NavAxisData& out) {
+    if (m_impl->nav_version == NAV_V2 && m_impl->mmc_ok)
+        return read_mag_mmc5983(out);
+    return read_mag_ak09915(out);
+}
+
 std::string Navigator::read_baro(NavBaroData& out) {
     out = {};
     if (!m_impl->baro_ok) return "read_baro: barometer not initialized";
@@ -303,7 +373,7 @@ std::string Navigator::read_leak(bool& detected) {
 
 std::string Navigator::pwm_enable(bool enable) {
     if (!m_impl->pwm_ok) return "pwm_enable: PCA9685 not initialized";
-    return pca9685_enable(m_impl->gpio, Impl::OE_PIN, enable);
+    return pca9685_enable(m_impl->gpio, PCA9685_OE_PIN, enable);
 }
 
 std::string Navigator::pwm_set_frequency(float freq_hz) {

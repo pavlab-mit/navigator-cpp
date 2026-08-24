@@ -1,4 +1,5 @@
 #include "spi.h"
+#include "gpio.h"
 
 #ifdef __linux__
 
@@ -8,70 +9,34 @@
 #include <linux/spi/spidev.h>
 #include <cstring>
 #include <cerrno>
-#include <cstdio>
+#include <map>
 
-// ─── Sysfs GPIO helpers for manual chip select ─────────────────
+static std::mutex s_bus_map_mutex;
+static std::map<std::string, std::weak_ptr<std::mutex>> s_bus_mutexes;
 
-static std::string sysfs_export(int pin) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
-    if (access(path, F_OK) == 0) return "";  // Already exported
-
-    FILE* f = fopen("/sys/class/gpio/export", "w");
-    if (!f) return std::string("sysfs_export: failed to open export: ") + strerror(errno);
-    fprintf(f, "%d", pin);
-    fclose(f);
-
-    // Wait for sysfs to create the node
-    for (int i = 0; i < 50; i++) {
-        if (access(path, F_OK) == 0) break;
-        usleep(10000);
+static std::shared_ptr<std::mutex> mutex_for_bus(const std::string& path) {
+    std::lock_guard<std::mutex> lock(s_bus_map_mutex);
+    std::weak_ptr<std::mutex>& entry = s_bus_mutexes[path];
+    std::shared_ptr<std::mutex> mutex = entry.lock();
+    if (!mutex) {
+        mutex = std::make_shared<std::mutex>();
+        entry = mutex;
     }
-    if (access(path, F_OK) != 0)
-        return "sysfs_export: gpio" + std::to_string(pin) + " direction file not created";
-    return "";
-}
-
-static std::string sysfs_set_direction(int pin, const char* dir) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
-    FILE* f = fopen(path, "w");
-    if (!f) return std::string("sysfs_set_direction: ") + strerror(errno);
-    fprintf(f, "%s", dir);
-    fclose(f);
-    return "";
-}
-
-static std::string sysfs_write(int pin, int value) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
-    FILE* f = fopen(path, "w");
-    if (!f) return std::string("sysfs_write: ") + strerror(errno);
-    fprintf(f, "%d", value);
-    fclose(f);
-    return "";
-}
-
-static std::string sysfs_unexport(int pin) {
-    FILE* f = fopen("/sys/class/gpio/unexport", "w");
-    if (!f) return "";  // Best effort
-    fprintf(f, "%d", pin);
-    fclose(f);
-    return "";
+    return mutex;
 }
 
 // ─── CS select/deselect ────────────────────────────────────────
 
 static std::string cs_select(SpiDevice& dev) {
     if (dev.cs_pin < 0) return "";
-    std::string err = sysfs_write(dev.cs_pin, 0);  // Active low
+    std::string err = gpio_set(dev.gpio, dev.cs_pin, 0);  // Active low
     if (!err.empty()) return "cs_select pin " + std::to_string(dev.cs_pin) + ": " + err;
     return "";
 }
 
 static std::string cs_deselect(SpiDevice& dev) {
     if (dev.cs_pin < 0) return "";
-    std::string err = sysfs_write(dev.cs_pin, 1);  // Deselect
+    std::string err = gpio_set(dev.gpio, dev.cs_pin, 1);  // Deselect
     if (!err.empty()) return "cs_deselect pin " + std::to_string(dev.cs_pin) + ": " + err;
     return "";
 }
@@ -79,9 +44,11 @@ static std::string cs_deselect(SpiDevice& dev) {
 // ─── Public API ────────────────────────────────────────────────
 
 std::string spi_open(const char* dev_path, uint32_t speed_hz, uint8_t mode,
-                      int cs_gpio, SpiDevice& dev_out) {
+                      GpioChip* gpio, int cs_gpio, SpiDevice& dev_out) {
     dev_out.fd = -1;
     dev_out.cs_pin = -1;
+    dev_out.gpio = nullptr;
+    dev_out.bus_mutex.reset();
     if (!dev_path) return "spi_open: null dev_path";
 
     int fd = open(dev_path, O_RDWR);
@@ -100,16 +67,16 @@ std::string spi_open(const char* dev_path, uint32_t speed_hz, uint8_t mode,
     }
 
     dev_out.fd = fd;
+    dev_out.bus_mutex = mutex_for_bus(dev_path);
 
     // Set up manual CS if requested
     if (cs_gpio >= 0) {
-        std::string err = sysfs_export(cs_gpio);
-        if (!err.empty()) { close(fd); dev_out.fd = -1; return "spi_open: " + err; }
-
-        err = sysfs_set_direction(cs_gpio, "high");  // Output, initially high (deselected)
+        if (!gpio) { close(fd); dev_out.fd = -1; return "spi_open: null GPIO chip for manual CS"; }
+        std::string err = gpio_request_output(gpio, cs_gpio, 1, "navigator-spi-cs");
         if (!err.empty()) { close(fd); dev_out.fd = -1; return "spi_open: " + err; }
 
         dev_out.cs_pin = cs_gpio;
+        dev_out.gpio = gpio;
     }
 
     return "";
@@ -117,14 +84,20 @@ std::string spi_open(const char* dev_path, uint32_t speed_hz, uint8_t mode,
 
 void spi_close(SpiDevice& dev) {
     if (dev.cs_pin >= 0) {
-        sysfs_write(dev.cs_pin, 1);  // Deselect, but leave exported
+        (void)gpio_set(dev.gpio, dev.cs_pin, 1);
+        gpio_release(dev.gpio, dev.cs_pin);
         dev.cs_pin = -1;
+        dev.gpio = nullptr;
     }
     if (dev.fd >= 0) { close(dev.fd); dev.fd = -1; }
+    dev.bus_mutex.reset();
 }
 
 std::string spi_transfer(SpiDevice& dev, const uint8_t* tx, uint8_t* rx, int len) {
     if (dev.fd < 0) return "spi_transfer: invalid fd";
+    if (!dev.bus_mutex) return "spi_transfer: missing bus mutex";
+
+    std::lock_guard<std::mutex> lock(*dev.bus_mutex);
 
     std::string err = cs_select(dev);
     if (!err.empty()) return "spi_transfer: " + err;
@@ -172,8 +145,8 @@ std::string spi_write_reg(SpiDevice& dev, uint8_t reg, uint8_t value) {
 }
 
 #else
-std::string spi_open(const char*, uint32_t, uint8_t, int, SpiDevice& d) { d.fd = -1; d.cs_pin = -1; return "spi: not supported on this platform"; }
-void spi_close(SpiDevice& d) { d.fd = -1; d.cs_pin = -1; }
+std::string spi_open(const char*, uint32_t, uint8_t, GpioChip*, int, SpiDevice& d) { d.fd = -1; d.cs_pin = -1; return "spi: not supported on this platform"; }
+void spi_close(SpiDevice& d) { d.fd = -1; d.cs_pin = -1; d.gpio = nullptr; d.bus_mutex.reset(); }
 std::string spi_transfer(SpiDevice&, const uint8_t*, uint8_t*, int) { return "spi: not supported on this platform"; }
 std::string spi_write(SpiDevice&, const uint8_t*, int) { return "spi: not supported on this platform"; }
 std::string spi_read_reg(SpiDevice&, uint8_t, uint8_t*, int) { return "spi: not supported on this platform"; }

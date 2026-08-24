@@ -6,6 +6,7 @@ int main() {
     Navigator nav;
     nav.init();
     if (!nav.is_initialized()) { fprintf(stderr, "FAIL: init\n"); return 1; }
+    if (!nav.is_pwm_ready()) { fprintf(stderr, "FAIL: PWM unavailable\n"); return 1; }
 
     std::string err = nav.pwm_set_frequency(50.0f);
     if (!err.empty()) { fprintf(stderr, "FAIL: %s\n", err.c_str()); return 1; }
@@ -20,8 +21,10 @@ int main() {
     printf("Channel 0 at 50%% duty for 1s\n");
     usleep(1000000);
 
-    nav.pwm_set_duty(0, 0.0f);
-    nav.pwm_enable(false);
+    err = nav.pwm_set_duty(0, 0.0f);
+    if (!err.empty()) { fprintf(stderr, "FAIL: %s\n", err.c_str()); return 1; }
+    err = nav.pwm_enable(false);
+    if (!err.empty()) { fprintf(stderr, "FAIL: %s\n", err.c_str()); return 1; }
     printf("PWM disabled\nPASS\n");
     return 0;
 }

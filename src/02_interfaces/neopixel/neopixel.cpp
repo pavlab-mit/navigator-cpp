@@ -24,7 +24,8 @@ static void encode_byte(uint8_t val, uint8_t* out) {
 std::string neopixel_init(int max_leds) {
     if (max_leds < 1 || max_leds > 255)
         return "neopixel_init: max_leds out of range (1-255)";
-    std::string err = spi_open(NEOPIXEL_SPI_DEV, NEOPIXEL_SPI_HZ, NEOPIXEL_SPI_MODE, -1, s_spi);
+    std::string err = spi_open(NEOPIXEL_SPI_DEV, NEOPIXEL_SPI_HZ, NEOPIXEL_SPI_MODE,
+                               nullptr, -1, s_spi);
     if (!err.empty()) return "neopixel_init: " + err;
     s_max_leds = max_leds;
     return "";

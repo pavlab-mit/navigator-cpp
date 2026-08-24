@@ -32,6 +32,18 @@ std::string gpio_open(const char* chip_path, GpioChip*& chip_out) {
     return "";
 }
 
+std::string gpio_open_by_label(const char* chip_label, GpioChip*& chip_out) {
+    chip_out = nullptr;
+    if (!chip_label) return "gpio_open_by_label: null chip_label";
+    struct gpiod_chip* chip = gpiod_chip_open_by_label(chip_label);
+    if (!chip)
+        return std::string("gpio_open_by_label: failed to open ") + chip_label
+               + ": " + strerror(errno);
+    chip_out = new GpioChip();
+    chip_out->chip = chip;
+    return "";
+}
+
 void gpio_close(GpioChip*& gc) {
     if (!gc) return;
     for (auto& [pin, gl] : gc->lines) {
@@ -129,6 +141,7 @@ void gpio_release(GpioChip* gc, int pin) {
 #else
 struct GpioChip {};
 std::string gpio_open(const char*, GpioChip*&) { return "gpio: not supported on this platform"; }
+std::string gpio_open_by_label(const char*, GpioChip*&) { return "gpio: not supported on this platform"; }
 void gpio_close(GpioChip*& p) { p = nullptr; }
 std::string gpio_request_output(GpioChip*, int, int, const char*) { return "gpio: not supported on this platform"; }
 std::string gpio_request_input(GpioChip*, int, const char*) { return "gpio: not supported on this platform"; }

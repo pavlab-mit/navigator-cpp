@@ -17,8 +17,10 @@
 #define PCA9685_MODE1_AI      0x20
 #define PCA9685_MODE1_SLEEP   0x10
 #define PCA9685_FULL_OFF      0x10
+#define PCA9685_MODE2_TOTEM_POLE 0x04
 
 static const float EXT_CLOCK_HZ = 24576000.0f;
+static const float DEFAULT_FREQUENCY_HZ = 50.0f;
 static bool s_pca_ok = false;
 static float s_freq_hz = 50.0f;  // Track current frequency for us conversion
 
@@ -71,6 +73,11 @@ std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
     if (!err.empty()) return "pca9685_init: ext clock: " + err;
     usleep(1000);
 
+    const uint8_t default_prescale = static_cast<uint8_t>(
+        roundf(EXT_CLOCK_HZ / (4096.0f * DEFAULT_FREQUENCY_HZ)) - 1.0f);
+    err = i2c_write_reg(i2c_fd, PCA9685_PRE_SCALE, default_prescale);
+    if (!err.empty()) return "pca9685_init: default prescale: " + err;
+
     err = i2c_write_reg(i2c_fd, PCA9685_MODE1, PCA9685_MODE1_EXTCLK);
     if (!err.empty()) return "pca9685_init: wake: " + err;
     usleep(1000);
@@ -90,6 +97,11 @@ std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
 
     err = initialize_channel_registers_off(i2c_fd);
     if (!err.empty()) return "pca9685_init: " + err;
+
+    // Establish output polarity/driver/disabled behavior explicitly instead
+    // of inheriting register state from a previous process.
+    err = i2c_write_reg(i2c_fd, PCA9685_MODE2, PCA9685_MODE2_TOTEM_POLE);
+    if (!err.empty()) return "pca9685_init: mode2 defaults: " + err;
     err = clear_all_channels_full_off(i2c_fd);
     if (!err.empty()) return "pca9685_init: clear all-off: " + err;
 
@@ -100,6 +112,7 @@ std::string pca9685_init(int i2c_fd, GpioChip* gpio, int oe_pin) {
         return "pca9685_init: global full-off remained asserted";
 
     s_pca_ok = true;
+    s_freq_hz = DEFAULT_FREQUENCY_HZ;
     return "";
 }
 
@@ -114,6 +127,12 @@ std::string pca9685_shutdown(int i2c_fd, GpioChip* gpio, int oe_pin) {
     if (i2c_fd >= 0) {
         std::string err = i2c_set_slave(i2c_fd, PCA9685_ADDR);
         if (err.empty()) err = set_all_channels_full_off(i2c_fd);
+        if (err.empty()) {
+            uint8_t all_off_h = 0;
+            err = i2c_read_reg(i2c_fd, PCA9685_ALL_LED_OFF_H, all_off_h);
+            if (err.empty() && !(all_off_h & PCA9685_FULL_OFF))
+                err = "global full-off did not latch";
+        }
         if (first_error.empty() && !err.empty())
             first_error = "pca9685_shutdown: orderly all-off: " + err;
     }
